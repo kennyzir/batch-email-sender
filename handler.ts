@@ -1,12 +1,11 @@
-import { VercelRequest, VercelResponse } from '@vercel/node';
-import { authMiddleware } from '../../lib/auth';
-import { successResponse, errorResponse } from '../../lib/response';
+// ClawHub Local Skill - runs entirely in your agent, no API key required
+// Batch Email Sender - Send transactional emails with template variables
+// Note: Requires user-provided RESEND_API_KEY environment variable
 
-/**
- * Batch Email Sender
- * Send transactional emails using Resend API (free tier: 100 emails/day).
- * Supports template variables, HTML content, and batch sending.
- */
+function env(key: string): string {
+  if (typeof process !== 'undefined' && process.env) return process.env[key] || '';
+  return '';
+}
 
 async function sendEmail(to: string, subject: string, html: string, from: string, apiKey: string): Promise<{ id: string; success: boolean; error?: string }> {
   try {
@@ -32,25 +31,24 @@ function applyTemplate(template: string, vars: Record<string, string>): string {
   return result;
 }
 
-async function handler(req: VercelRequest, res: VercelResponse) {
-  const { recipients, subject, html_template, from, variables } = req.body || {};
-  if (!recipients || !Array.isArray(recipients) || recipients.length === 0) return errorResponse(res, 'recipients array is required', 400);
-  if (!subject) return errorResponse(res, 'subject is required', 400);
-  if (!html_template) return errorResponse(res, 'html_template is required', 400);
-  if (recipients.length > 100) return errorResponse(res, 'Max 100 recipients per batch', 400);
+export async function run(input: { recipients: Array<string | { email: string; [key: string]: string }>; subject: string; html_template: string; from?: string; variables?: Record<string, string> }) {
+  if (!input.recipients || !Array.isArray(input.recipients) || input.recipients.length === 0) throw new Error('recipients array is required');
+  if (!input.subject) throw new Error('subject is required');
+  if (!input.html_template) throw new Error('html_template is required');
+  if (input.recipients.length > 100) throw new Error('Max 100 recipients per batch');
 
-  const resendKey = process.env.RESEND_API_KEY;
-  if (!resendKey) return errorResponse(res, 'RESEND_API_KEY not configured on server', 500);
+  const resendKey = env('RESEND_API_KEY');
+  if (!resendKey) throw new Error('RESEND_API_KEY environment variable is required. Get a free key at https://resend.com');
 
-  const sender = from || 'noreply@claw0x.com';
+  const sender = input.from || 'noreply@claw0x.com';
   const startTime = Date.now();
   const results: Array<{ to: string; success: boolean; id?: string; error?: string }> = [];
 
-  for (const recipient of recipients) {
+  for (const recipient of input.recipients) {
     const to = typeof recipient === 'string' ? recipient : recipient.email;
-    const vars = typeof recipient === 'object' ? { ...variables, ...recipient } : (variables || {});
-    const html = applyTemplate(html_template, vars);
-    const subjectFinal = applyTemplate(subject, vars);
+    const vars = typeof recipient === 'object' ? { ...input.variables, ...recipient } : (input.variables || {});
+    const html = applyTemplate(input.html_template, vars);
+    const subjectFinal = applyTemplate(input.subject, vars);
     const result = await sendEmail(to, subjectFinal, html, sender, resendKey);
     results.push({ to, ...result });
   }
@@ -58,10 +56,10 @@ async function handler(req: VercelRequest, res: VercelResponse) {
   const sent = results.filter(r => r.success).length;
   const failed = results.filter(r => !r.success).length;
 
-  return successResponse(res, {
-    results, sent, failed, total: recipients.length,
+  return {
+    results, sent, failed, total: input.recipients.length,
     _meta: { skill: 'batch-email-sender', latency_ms: Date.now() - startTime },
-  });
+  };
 }
 
-export default authMiddleware(handler);
+export default run;
